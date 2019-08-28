@@ -1,6 +1,8 @@
 import os
 import time
 import re
+import qualysapi
+from lxml import objectify
 from slackclient import SlackClient
 
 
@@ -11,7 +13,7 @@ starterbot_id = None
 
 # constants
 RTM_READ_DELAY = 1 # 1 second delay between reading from RTM
-EXAMPLE_COMMAND = "do"
+EXAMPLE_COMMAND = "stop"
 MENTION_REGEX = "^<@(|[WU].+?)>(.*)"
 
 def parse_bot_commands(slack_events):
@@ -47,14 +49,23 @@ def handle_command(command, channel):
     response = None
     # This is where you start to implement more commands!
     if command.startswith(EXAMPLE_COMMAND):
-        response = "Sure...write some more code then I can do that!"
-
-    # Sends the response back to the channel
-    slack_client.api_call(
-        "chat.postMessage",
-        channel=channel,
-        text=response or default_response
-    )
+        q = qualysapi.connect()
+        r = q.request('/api/2.0/fo/scan/',{'action': 'list','state':'Running'})
+        root = objectify.fromstring(bytes(r, encoding='utf-8'))
+        try:
+            # Iterate scans and store scan references.
+            for scan in root.RESPONSE.SCAN_LIST.SCAN:
+                response = f'Canceling {scan.TITLE.text}: {scan.REF.text}...'
+                # Sends the response back to the channel
+                slack_client.api_call("chat.postMessage",channel=channel,text=response or default_response)
+                r = q.request('/api/2.0/fo/scan/',{'action': 'cancel','scan_ref': scan.REF.text})
+                response = 'Failed to cancel scan, or scan has already been canceled.'
+                if '<TEXT>Canceling scan</TEXT>' in r:
+                    response = 'Successfully canceled scan.'
+                slack_client.api_call("chat.postMessage",channel=channel,text=response or default_response)
+        except AttributeError:
+            response = 'No scans running.'
+            slack_client.api_call("chat.postMessage",channel=channel,text=response or default_response)
 
 if __name__ == "__main__":
     if slack_client.rtm_connect(with_team_state=False):
